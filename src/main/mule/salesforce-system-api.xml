@@ -1,0 +1,436 @@
+<mule xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties" xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation=" http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
+http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd">
+<configuration-properties file="config-dev.properties" doc:name="Development Properties"/>
+<http:listener-config name="HTTP_Listener_config" doc:name="Salesforce System API Listener">
+<http:listener-connection host="0.0.0.0" port="${http.port}"/>
+</http:listener-config>
+<salesforce:sfdc-config name="Salesforce_Config" doc:name="Salesforce Config">
+<salesforce:oauth-client-credentials-connection>
+<salesforce:oauth-client-credentials clientId="${secure::salesforce.clientId}" clientSecret="${secure::salesforce.clientSecret}" tokenUrl="${salesforce.tokenUrl}"/>
+</salesforce:oauth-client-credentials-connection>
+</salesforce:sfdc-config>
+<!--  POST /contacts: upsert by EBS_External_ID__c.  -->
+<secure-properties:config name="Secure_Properties_Config" doc:name="Secure Properties Config" doc:id="327f07c0-0717-40a3-900c-5b36ea6b30b9" file="config-dev.properties" key="mule12345" >
+		<secure-properties:encrypt algorithm="Blowfish" />
+	</secure-properties:config>
+	<flow name="upsert-contact-flow" doc:name="Upsert Contact">
+<http:listener config-ref="HTTP_Listener_config" path="/contacts" allowedMethods="POST" doc:name="Upsert Contact Listener">
+<http:response statusCode="#[vars.httpStatus default 200]"/>
+<http:error-response statusCode="#[vars.httpStatus default 500]"/>
+</http:listener>
+<set-variable variableName="requestBody" value="#[payload]" doc:name="Store Request Body"/>
+<choice doc:name="Validate Upsert Request">
+<when expression="#[((vars.requestBody is Object) and !isEmpty(vars.requestBody.externalId default '') and !isEmpty(vars.requestBody.lastName default ''))]">
+<set-variable variableName="externalId" value="#[vars.requestBody.externalId as String]" doc:name="Store External ID"/>
+<ee:transform doc:name="Map Contact for Salesforce Upsert">
+<ee:message>
+<ee:set-payload><![CDATA[ %dw 2.0
+output application/java
+---
+[{
+    EBS_External_ID__c: vars.externalId,
+    LastName: vars.requestBody.lastName,
+
+    (FirstName: vars.requestBody.firstName)
+        if (vars.requestBody.firstName != null),
+
+    (Email: vars.requestBody.email)
+        if (vars.requestBody.email != null),
+
+    (Phone: vars.requestBody.phone)
+        if (vars.requestBody.phone != null),
+
+    (MailingCity: vars.requestBody.city)
+        if (vars.requestBody.city != null),
+
+    (MailingCountry: vars.requestBody.country)
+        if (vars.requestBody.country != null),
+
+    (MailingState: vars.requestBody.state)
+        if (
+            vars.requestBody.state != null
+            and vars.requestBody.country != null
+        ),
+
+    (MailingPostalCode: vars.requestBody.postalCode)
+        if (vars.requestBody.postalCode != null)
+}]]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+<salesforce:upsert config-ref="Salesforce_Config" objectType="Contact" externalIdFieldName="EBS_External_ID__c" doc:name="Salesforce Contact Upsert"/>
+<!--  Upsert returns a BulkOperationResult object, not a list of records.  -->
+<set-variable variableName="upsertResult" value="#[payload]" doc:name="Capture Upsert Result"/>
+<ee:transform doc:name="Build Upsert Response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/json
+var result = vars.upsertResult
+var items = result.items default result.Items default []
+var item = items[0] default {}
+var operationSuccess = (result.successful default result.Successful default false) as Boolean
+var itemSuccess = (item.successful default item.Successful default operationSuccess) as Boolean
+var success = operationSuccess and itemSuccess and sizeOf(items) > 0
+---
+{
+    success: success,
+    message: if (success) "Salesforce Contact upsert succeeded" else "Salesforce did not confirm a successful Contact upsert",
+    externalId: vars.externalId,
+    salesforceId: item.id default item.Id default null,
+    errors: if (success) [] else [{
+        statusCode: item.statusCode default item.StatusCode default null,
+        message: item.message default item.Message default "No successful record result was returned. Check the Mule console and Salesforce field configuration."
+    }]
+} ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+<set-variable variableName="httpStatus" value="#[if (payload.success) 200 else 400]" doc:name="Set Upsert HTTP Status"/>
+</when>
+<otherwise>
+<set-variable variableName="httpStatus" value="#[400]" doc:name="Set Validation Status"/>
+<ee:transform doc:name="Invalid Upsert Request Response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "VALIDATION_ERROR",
+    message: "externalId and lastName are required",
+    correlationId: correlationId
+} ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+</otherwise>
+</choice>
+<error-handler>
+<on-error-continue type="ANY" logException="true" enableNotifications="true">
+<set-variable variableName="httpStatus" value="#[500]" doc:name="Set Upsert Error Status"/>
+<logger level="ERROR" doc:name="Log Upsert Failure" message="#[ 'Salesforce upsert failed. correlationId=' ++ correlationId ++ '; errorType=' ++ (error.errorType.identifier default 'UNKNOWN') ]"/>
+<ee:transform doc:name="Upsert Error Response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "SALESFORCE_UPSERT_ERROR",
+    message: "Contact upsert could not be completed",
+    correlationId: correlationId
+} ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+</on-error-continue>
+</error-handler>
+</flow>
+<!--  GET /contacts/{contactId}: contactId must be the Salesforce record ID.  -->
+<flow name="get-contact-by-id-flow" doc:name="Get Contact by Salesforce ID">
+<http:listener config-ref="HTTP_Listener_config" path="/contacts/{contactId}" allowedMethods="GET" doc:name="Get Contact Listener">
+<http:response statusCode="#[vars.httpStatus default 200]"/>
+<http:error-response statusCode="#[vars.httpStatus default 500]"/>
+</http:listener>
+<set-variable variableName="contactId" value="#[attributes.uriParams.contactId as String]" doc:name="Capture Salesforce Contact ID"/>
+<salesforce:query
+    config-ref="Salesforce_Config"
+    doc:name="Query Contact by ID">
+
+    <salesforce:salesforce-query><![CDATA[
+        SELECT Id,
+               EBS_External_ID__c,
+               FirstName,
+               LastName,
+               Email,
+               Phone,
+               MailingCity,
+               MailingState,
+               MailingPostalCode
+        FROM Contact
+        WHERE Id = ':contactId'
+        LIMIT 1
+    ]]></salesforce:salesforce-query>
+
+    <salesforce:parameters><![CDATA[#[{
+        contactId: vars.contactId
+    }]]]></salesforce:parameters>
+
+</salesforce:query>
+<choice doc:name="Contact Found?">
+<when expression="#[isEmpty(payload)]">
+<set-variable variableName="httpStatus" value="#[404]" doc:name="Set Contact Not Found Status"/>
+<ee:transform doc:name="Contact Not Found Response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "CONTACT_NOT_FOUND",
+    message: "No Contact was found for the supplied Salesforce record ID",
+    contactId: vars.contactId,
+    correlationId: correlationId
+} ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+</when>
+<otherwise>
+<set-variable variableName="httpStatus" value="#[200]" doc:name="Set Contact Found Status"/>
+<ee:transform doc:name="Get Contact Response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/json
+---
+{
+    success: true,
+    data: payload[0]
+} ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+</otherwise>
+</choice>
+<error-handler>
+<on-error-continue type="ANY" logException="true" enableNotifications="true">
+<set-variable variableName="httpStatus" value="#[500]" doc:name="Set Get Error Status"/>
+<logger level="ERROR" doc:name="Log Get Contact Failure" message="#[ 'Salesforce contact query failed. correlationId=' ++ correlationId ++ '; errorType=' ++ (error.errorType.identifier default 'UNKNOWN') ]"/>
+<ee:transform doc:name="Get Contact Error Response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "SALESFORCE_QUERY_ERROR",
+    message: "Contact lookup could not be completed",
+    correlationId: correlationId
+} ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+</on-error-continue>
+</error-handler>
+</flow>
+<!--  PUT /contacts/{contactId}: contactId must be the Salesforce record ID.  -->
+<flow name="update-contact-flow" doc:name="Update Contact">
+<http:listener config-ref="HTTP_Listener_config" path="/contacts/{contactId}" allowedMethods="PUT" doc:name="Update Contact Listener">
+<http:response statusCode="#[vars.httpStatus default 200]"/>
+<http:error-response statusCode="#[vars.httpStatus default 500]"/>
+</http:listener>
+<set-variable variableName="contactId" value="#[attributes.uriParams.contactId as String]" doc:name="Capture Salesforce Contact ID"/>
+<set-variable variableName="requestBody" value="#[payload]" doc:name="Store Update Request"/>
+<choice doc:name="Validate Update Request">
+<when expression="#[((vars.requestBody is Object) and !isEmpty(vars.requestBody.lastName default vars.requestBody.LastName default ''))]">
+<ee:transform doc:name="Map Contact for Salesforce Update">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/java
+var body = vars.requestBody
+---
+[{
+    Id: vars.contactId,
+    LastName: body.lastName default body.LastName,
+    (FirstName: body.firstName default body.FirstName) if ((body.firstName default body.FirstName) != null),
+    (Email: body.email default body.Email) if ((body.email default body.Email) != null),
+    (Phone: body.phone default body.Phone) if ((body.phone default body.Phone) != null),
+    (MailingCity: body.city default body.MailingCity) if ((body.city default body.MailingCity) != null),
+    (MailingState: body.state default body.MailingState) if ((body.state default body.MailingState) != null),
+    (MailingPostalCode: body.postalCode default body.MailingPostalCode) if ((body.postalCode default body.MailingPostalCode) != null)
+}] ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+<salesforce:update config-ref="Salesforce_Config" type="Contact" doc:name="Salesforce Contact Update"/>
+<!-- Capture the complete Salesforce Update result object -->
+<set-variable
+    variableName="updateResult"
+    value="#[payload]"
+    doc:name="Capture Salesforce Update Result"/>
+
+<!-- Build response using the actual Bulk Operation Result fields -->
+<ee:transform doc:name="Build Update Response">
+    <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+
+var result = vars.updateResult default {}
+var items = result.items default result.Items default []
+var item = items[0] default {}
+
+var operationSuccess =
+    (result.successful default result.Successful default false) as Boolean
+
+var itemSuccess =
+    if (isEmpty(items))
+        operationSuccess
+    else
+        (item.successful default item.Successful default false) as Boolean
+
+var success = operationSuccess and itemSuccess
+
+---
+{
+    success: success,
+    message:
+        if (success)
+            "Contact updated successfully"
+        else
+            "Salesforce did not confirm a successful Contact update",
+    contactId: item.id default item.Id default vars.contactId,
+    errors:
+        if (success)
+            []
+        else
+            [{
+                statusCode: item.statusCode default item.StatusCode default null,
+                message: item.message
+                    default item.Message
+                    default "Salesforce returned an unsuccessful update result"
+            }]
+}
+]]></ee:set-payload>
+    </ee:message>
+</ee:transform>
+
+<set-variable
+    variableName="httpStatus"
+    value="#[if (payload.success) 200 else 400]"
+    doc:name="Set Update HTTP Status"/>
+</when>
+<otherwise>
+<set-variable variableName="httpStatus" value="#[400]" doc:name="Set Update Validation Status"/>
+<ee:transform doc:name="Invalid Update Request Response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "VALIDATION_ERROR",
+    message: "lastName is required for Contact update",
+    correlationId: correlationId
+} ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+</otherwise>
+</choice>
+<error-handler>
+<on-error-continue type="ANY" logException="true" enableNotifications="true">
+<set-variable variableName="httpStatus" value="#[500]" doc:name="Set Update Error Status"/>
+<logger level="ERROR" doc:name="Log Update Failure" message="#[ 'Salesforce contact update failed. correlationId=' ++ correlationId ++ '; errorType=' ++ (error.errorType.identifier default 'UNKNOWN') ]"/>
+<ee:transform doc:name="Update Error Response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "SALESFORCE_UPDATE_ERROR",
+    message: "Contact update could not be completed",
+    correlationId: correlationId
+} ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+</on-error-continue>
+</error-handler>
+</flow>
+<!--  DELETE /contacts/{contactId}: contactId must be the Salesforce record ID.  -->
+<flow name="delete-contact-flow" doc:name="Delete Contact">
+<http:listener config-ref="HTTP_Listener_config" path="/contacts/{contactId}" allowedMethods="DELETE" doc:name="Delete Contact Listener">
+<http:response statusCode="#[vars.httpStatus default 200]"/>
+<http:error-response statusCode="#[vars.httpStatus default 500]"/>
+</http:listener>
+<set-variable variableName="contactId" value="#[attributes.uriParams.contactId as String]" doc:name="Capture Salesforce Contact ID"/>
+<salesforce:delete config-ref="Salesforce_Config" doc:name="Salesforce Contact Delete">
+<salesforce:ids>
+<![CDATA[ #[[vars.contactId]] ]]>
+</salesforce:ids>
+</salesforce:delete>
+<!-- Capture the complete Salesforce Delete result -->
+<set-variable
+    variableName="deleteResult"
+    value="#[payload]"
+    doc:name="Capture Salesforce Delete Result"/>
+
+<!-- Build response from the actual operation result -->
+<ee:transform doc:name="Build Delete Response">
+    <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+
+var result = vars.deleteResult default {}
+var items = result.Items default result.items default []
+var item = items[0] default {}
+
+var operationSuccess =
+    (result.Successful default result.successful default false) as Boolean
+
+var itemSuccess =
+    (item.Successful default item.successful default false) as Boolean
+
+var success = operationSuccess and itemSuccess
+
+---
+{
+    success: success,
+    message:
+        if (success)
+            "Contact deleted successfully"
+        else
+            "Salesforce did not confirm a successful Contact deletion",
+    contactId: item.Id default item.id default vars.contactId,
+    errors:
+        if (success)
+            []
+        else
+            [{
+                statusCode: item.StatusCode default item.statusCode default null,
+                message: item.Message
+                    default item.message
+                    default "Salesforce returned an unsuccessful delete result"
+            }]
+}
+]]></ee:set-payload>
+    </ee:message>
+</ee:transform>
+
+<set-variable
+    variableName="httpStatus"
+    value="#[if (payload.success) 200 else 400]"
+    doc:name="Set Delete HTTP Status"/>
+<error-handler>
+<on-error-continue type="ANY" logException="true" enableNotifications="true">
+<set-variable variableName="httpStatus" value="#[500]" doc:name="Set Delete Error Status"/>
+<logger level="ERROR" doc:name="Log Delete Failure" message="#[ 'Salesforce contact delete failed. correlationId=' ++ correlationId ++ '; errorType=' ++ (error.errorType.identifier default 'UNKNOWN') ]"/>
+<ee:transform doc:name="Delete Error Response">
+<ee:message>
+<ee:set-payload>
+<![CDATA[ %dw 2.0
+output application/json
+---
+{
+    success: false,
+    code: "SALESFORCE_DELETE_ERROR",
+    message: "Contact delete could not be completed",
+    correlationId: correlationId
+} ]]>
+</ee:set-payload>
+</ee:message>
+</ee:transform>
+</on-error-continue>
+</error-handler>
+</flow>
+</mule>
