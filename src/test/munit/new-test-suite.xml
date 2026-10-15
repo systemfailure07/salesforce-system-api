@@ -1,0 +1,525 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:munit="http://www.mulesoft.org/schema/mule/munit"
+      xmlns:munit-tools="http://www.mulesoft.org/schema/mule/munit-tools"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/munit http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd 
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/munit
+        http://www.mulesoft.org/schema/mule/munit/current/mule-munit.xsd
+        http://www.mulesoft.org/schema/mule/munit-tools
+        http://www.mulesoft.org/schema/mule/munit-tools/current/mule-munit-tools.xsd">
+
+    <munit:config name="new-test-suite.xml"/>
+
+    <!-- ====================================================== -->
+    <!-- 1. UPSERT CONTACT - SUCCESS                            -->
+    <!-- ====================================================== -->
+
+    <munit:test name="upsert-contact-success-test"
+                description="Test successful upsert contact">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:upsert">
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{successful: true, items: [{successful: true, id: '003TEST001'}]}]"
+                        mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{externalId: 'EBS001', lastName: 'Reddy', firstName: 'Ravi', email: 'ravi@example.com'}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="upsert-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(200)]"/>
+
+            <munit-tools:assert-that
+                expression="#[payload.success]"
+                is="#[MunitTools::equalTo(true)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 2. UPSERT CONTACT - SALESFORCE UNSUCCESSFUL             -->
+    <!-- ====================================================== -->
+
+    <munit:test name="upsert-contact-unsuccessful-test"
+                description="Test unsuccessful Salesforce upsert result">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:upsert">
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{successful: false, items: [{successful: false, errors: ['Upsert failed']}]}]"
+                        mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{externalId: 'EBS002', lastName: 'Kumar', firstName: 'Raj'}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="upsert-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(400)]"/>
+
+            <munit-tools:assert-that
+                expression="#[payload.success]"
+                is="#[MunitTools::equalTo(false)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 3. UPSERT CONTACT - VALIDATION ERROR                   -->
+    <!-- ====================================================== -->
+
+    <munit:test name="upsert-contact-validation-test"
+                description="Test upsert validation when required fields are missing">
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{email: 'invalid@example.com'}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="upsert-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(400)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 4. UPSERT CONTACT - ERROR HANDLER                      -->
+    <!-- ====================================================== -->
+
+    <munit:test name="upsert-contact-error-handler-test"
+                description="Test upsert error handler">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:upsert">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="MULE:EXPRESSION"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{externalId: 'EBS003', lastName: 'ErrorTest', firstName: 'Test'}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="upsert-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(500)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 5. GET CONTACT BY ID - FOUND                           -->
+    <!-- ====================================================== -->
+
+    <munit:test name="get-contact-by-id-found-test"
+                description="Test retrieving an existing contact">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:query">
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[[{Id: '003TEST001', FirstName: 'Ravi', LastName: 'Reddy', Email: 'ravi@example.com'}]]"
+                        mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="get-contact-by-id-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(200)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 6. GET CONTACT BY ID - NOT FOUND                       -->
+    <!-- ====================================================== -->
+
+    <munit:test name="get-contact-by-id-not-found-test"
+                description="Test retrieving a contact that does not exist">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:query">
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[[]]"
+                        mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003MISSING001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="get-contact-by-id-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(404)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 7. GET CONTACT BY ID - ERROR HANDLER                   -->
+    <!-- ====================================================== -->
+
+    <munit:test name="get-contact-by-id-error-test"
+                description="Test get contact error handler">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:query">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="MULE:EXPRESSION"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003ERROR001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="get-contact-by-id-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(500)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 8. UPDATE CONTACT - SUCCESS                            -->
+    <!-- ====================================================== -->
+
+    <munit:test name="update-contact-success-test"
+                description="Test successful contact update">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:update">
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{successful: true, items: [{successful: true, id: '003TEST001'}]}]"
+                        mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{lastName: 'UpdatedReddy', firstName: 'Ravi', email: 'updated@example.com'}]"
+                    mediaType="application/java"/>
+
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="update-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(200)]"/>
+
+            <munit-tools:assert-that
+                expression="#[payload.success]"
+                is="#[MunitTools::equalTo(true)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 9. UPDATE CONTACT - SALESFORCE UNSUCCESSFUL             -->
+    <!-- ====================================================== -->
+
+    <munit:test name="update-contact-unsuccessful-test"
+                description="Test unsuccessful Salesforce update result">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:update">
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{successful: false, items: [{successful: false, errors: ['Update failed']}]}]"
+                        mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{lastName: 'UpdatedReddy'}]"
+                    mediaType="application/java"/>
+
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="update-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(400)]"/>
+
+            <munit-tools:assert-that
+                expression="#[payload.success]"
+                is="#[MunitTools::equalTo(false)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 10. UPDATE CONTACT - VALIDATION ERROR                  -->
+    <!-- ====================================================== -->
+
+    <munit:test name="update-contact-validation-test"
+                description="Test update validation when lastName is missing">
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{firstName: 'Ravi', email: 'ravi@example.com'}]"
+                    mediaType="application/java"/>
+
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="update-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(400)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 11. UPDATE CONTACT - ERROR HANDLER                     -->
+    <!-- ====================================================== -->
+
+    <munit:test name="update-contact-error-handler-test"
+                description="Test update contact error handler">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:update">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="MULE:EXPRESSION"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:payload
+                    value="#[{lastName: 'ErrorTest', firstName: 'Test'}]"
+                    mediaType="application/java"/>
+
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="update-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(500)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 12. DELETE CONTACT - SUCCESS                           -->
+    <!-- ====================================================== -->
+
+    <munit:test name="delete-contact-success-test"
+                description="Test successful contact deletion">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:delete">
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{successful: true, items: [{successful: true, id: '003TEST001'}]}]"
+                        mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="delete-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(200)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 13. DELETE CONTACT - UNSUCCESSFUL                       -->
+    <!-- ====================================================== -->
+
+    <munit:test name="delete-contact-unsuccessful-test"
+                description="Test unsuccessful Salesforce delete result">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:delete">
+                <munit-tools:then-return>
+                    <munit-tools:payload
+                        value="#[{successful: false, items: [{successful: false, errors: ['Delete failed']}]}]"
+                        mediaType="application/java"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003TEST001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="delete-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(400)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+
+    <!-- ====================================================== -->
+    <!-- 14. DELETE CONTACT - ERROR HANDLER                     -->
+    <!-- ====================================================== -->
+
+    <munit:test name="delete-contact-error-test"
+                description="Test delete contact error handler">
+
+        <munit:behavior>
+            <munit-tools:mock-when processor="salesforce:delete">
+                <munit-tools:then-return>
+                    <munit-tools:error typeId="MULE:EXPRESSION"/>
+                </munit-tools:then-return>
+            </munit-tools:mock-when>
+        </munit:behavior>
+
+        <munit:execution>
+            <munit:set-event>
+                <munit:attributes
+                    value="#[{uriParams: {contactId: '003ERROR001'}}]"
+                    mediaType="application/java"/>
+            </munit:set-event>
+
+            <flow-ref name="delete-contact-flow"/>
+        </munit:execution>
+
+        <munit:validation>
+            <munit-tools:assert-that
+                expression="#[vars.httpStatus]"
+                is="#[MunitTools::equalTo(500)]"/>
+        </munit:validation>
+
+    </munit:test>
+
+</mule>
